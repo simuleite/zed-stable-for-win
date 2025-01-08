@@ -1,14 +1,69 @@
 name: Build Zed Stable
 
 on:
+  schedule:
+    - cron: "0 0 * * *"  # 每天午夜UTC时间触发
   push:
     tags:
       - 'v*.*.*'  # 仅当创建符合稳定版命名规则的新标签时触发
 
 jobs:
-  build:
-    runs-on: windows-latest
+  check-and-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
+      - name: Get latest tag from Zed Industries
+        id: get_latest_tag
+        run: |
+          # 获取Zed Industries仓库的最新标签
+          latest_tag=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r '.tag_name')
+          echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
+
+      - name: Compare with last known tag
+        id: compare_tags
+        run: |
+          # 从文件中读取上次已知的最新标签
+          if [ -f last_known_tag.txt ]; then
+            last_known_tag=$(cat last_known_tag.txt)
+          else
+            last_known_tag=""
+          fi
+          echo "Last known tag: $last_known_tag"
+          echo "Latest tag: ${{ env.LATEST_TAG }}"
+
+          # 比较标签
+          if [ "$last_known_tag" != "${{ env.LATEST_TAG }}" ]; then
+            echo "New tag found, triggering build"
+            echo "TRIGGER_BUILD=true" >> $GITHUB_ENV
+          else
+            echo "No new tag found, skipping build"
+          fi
+
+      - name: Save latest tag
+        run: |
+          echo "${{ env.LATEST_TAG }}" > last_known_tag.txt
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add last_known_tag.txt
+          git commit -m "Update last known tag"
+          git push
+
+      - name: Trigger build
+        if: ${{ env.TRIGGER_BUILD == 'true' }}
+        run: |
+          # 触发实际的打包工作流
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/your-username/your-repo/dispatches \
+            -d '{"event_type":"build-zed", "client_payload":{}}'
+
+  build:
+    needs: check-and-trigger
+    if: ${{ needs.check-and-trigger.outputs.TRIGGER_BUILD == 'true' }}
+    runs-on: windows-latest
     steps:
       - name: Enable long paths in Git
         run: |
@@ -24,7 +79,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: zed-industries/zed
-          ref: ${{ github.event.ref }}  # 使用触发的标签版本
+          ref: ${{ env.LATEST_TAG }}  # 使用最新的稳定版标签
 
       - name: Install rust nightly
         uses: dtolnay/rust-toolchain@stable
@@ -50,7 +105,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
@@ -59,7 +113,7 @@ jobs:
 
       - name: Get the current tag name
         id: tag
-        run: echo "TAG_NAME=${{ github.event.ref_name }}" >> $GITHUB_ENV
+        run: echo "TAG_NAME=${{ env.LATEST_TAG }}" >> $GITHUB_ENV
 
       - name: Create release zip
         run: |
