@@ -88,6 +88,16 @@ jobs:
           override: true
           target: wasm32-wasip1
 
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/lib
+          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2.7.3
 
