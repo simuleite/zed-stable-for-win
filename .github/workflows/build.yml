@@ -1,141 +1,54 @@
-name: Build Zed Stable
+build:
+  needs: check-and-trigger
+  if: ${{ env.TRIGGER_BUILD == 'true' }}
+  runs-on: windows-latest
+  strategy:
+    matrix:
+      backend: [vulkan, opengl]
+      include:
+        - backend: vulkan
+          artifact_name: zed-release
+          rustflags: ""
+        - backend: opengl
+          artifact_name: zed-release-opengl
+          rustflags: "--cfg gles"
 
-on:
-  schedule:
-    - cron: "0 */12 * * *"  # 每12小时触发一次
-  push:
-    tags:
-      - 'v*.*.*'  # 仅当创建符合稳定版命名规则的新标签时触发
+  steps:
+    - name: Enable long paths in Git
+      run: |
+        git config --system core.longpaths true
 
-jobs:
-  check-and-trigger:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Enable long paths in Windows
+      shell: powershell
+      run: |
+        New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+          -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 
-      - name: Get latest stable tag from Zed Industries
-        id: get_latest_tag
-        run: |
-          # 获取 Zed Industries 仓库的最新稳定版标签
-          latest_tag=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r '.tag_name')
-          echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
-          echo "Latest stable tag: $latest_tag"
+    - name: Checkout Zed repository
+      uses: actions/checkout@v3
+      with:
+        repository: zed-industries/zed
+        ref: ${{ env.LATEST_TAG }}  # 使用最新的稳定版标签
 
-      - name: Compare with last known tag
-        id: compare_tags
-        run: |
-          # 从文件中读取上次已知的最新标签
-          if [ -f last_known_tag.txt ]; then
-            last_known_tag=$(cat last_known_tag.txt)
-          else
-            last_known_tag=""
-          fi
-          echo "Last known tag: $last_known_tag"
-          echo "Latest tag: ${{ env.LATEST_TAG }}"
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        override: true
 
-          # 比较标签
-          if [ "$last_known_tag" != "${{ env.LATEST_TAG }}" ]; then
-            echo "New stable tag found, triggering build"
-            echo "TRIGGER_BUILD=true" >> $GITHUB_ENV
-          else
-            echo "No new stable tag found, skipping build"
-          fi
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2.7.3
+      with:
+        key: ${{ matrix.backend }}-stable
 
-      - name: Save latest tag
-        run: |
-          echo "${{ env.LATEST_TAG }}" > last_known_tag.txt
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add last_known_tag.txt
-          git commit -m "Update last known tag"
-          git push
+    - name: Build release
+      env:
+        RUSTFLAGS: ${{ matrix.rustflags }}
+        CARGO_BUILD_JOBS: 2  # 设置并行任务数为 2
+      run: cargo build --release --jobs 2
 
-  build:
-    needs: check-and-trigger
-    if: ${{ env.TRIGGER_BUILD == 'true' }}
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        backend: [vulkan, opengl]
-        include:
-          - backend: vulkan
-            artifact_name: zed-release
-            rustflags: ""
-          - backend: opengl
-            artifact_name: zed-release-opengl
-            rustflags: "--cfg gles"
-
-    steps:
-      - name: Enable long paths in Git
-        run: |
-          git config --system core.longpaths true
-
-      - name: Enable long paths in Windows
-        shell: powershell
-        run: |
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
-
-      - name: Checkout Zed repository
-        uses: actions/checkout@v3
-        with:
-          repository: zed-industries/zed
-          ref: ${{ env.LATEST_TAG }}  # 使用最新的稳定版标签
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          override: true
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.7.3
-        with:
-          key: ${{ matrix.backend }}-stable
-
-      - name: Build release
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release
-
-      - name: Archive build
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: target/release/zed.exe
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Get the current tag name
-        id: tag
-        run: echo "TAG_NAME=${{ env.LATEST_TAG }}" >> $GITHUB_ENV
-
-      - name: Create release directories and zip
-        run: |
-          mkdir -p zed-release zed-release-opengl
-          mv artifacts/zed-release/zed.exe zed-release/
-          mv artifacts/zed-release-opengl/zed.exe zed-release-opengl/
-          zip -r zed-windows-${{ env.TAG_NAME }}.zip zed-release/*
-          zip -r zed-windows-opengl-${{ env.TAG_NAME }}.zip zed-release-opengl/*
-
-      - name: Upload release build artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ env.TAG_NAME }}
-          tag_name: ${{ env.TAG_NAME }}
-          draft: false
-          make_latest: true
-          files: |
-            zed-windows-${{ env.TAG_NAME }}.zip
-            zed-windows-opengl-${{ env.TAG_NAME }}.zip
+    - name: Archive build
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: target/release/zed.exe
