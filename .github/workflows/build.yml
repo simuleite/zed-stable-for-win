@@ -9,7 +9,7 @@ on:
 
 jobs:
   check-and-trigger:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 显式指定 Ubuntu 22.04
     outputs:
       trigger_build: ${{ steps.compare_tags.outputs.trigger_build }}
     steps:
@@ -35,9 +35,9 @@ jobs:
           echo "Latest tag: ${{ env.LATEST_TAG }}"
 
           if [ "$last_known_tag" != "${{ env.LATEST_TAG }}" ]; then
-            echo "::set-output name=trigger_build::true"
+            echo "trigger_build=true" >> $GITHUB_OUTPUT  # 使用环境文件设置输出
           else
-            echo "::set-output name=trigger_build::false"
+            echo "trigger_build=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Save latest tag
@@ -45,9 +45,14 @@ jobs:
           echo "${{ env.LATEST_TAG }}" > last_known_tag.txt
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          git checkout -b update-tag  # 创建并切换到临时分支
           git add last_known_tag.txt
           git commit -m "Update last known tag"
-          git push
+          git push origin update-tag  # 推送到临时分支
+
+      - name: Clean up temporary branch (optional)
+        run: |
+          git push origin --delete update-tag
 
   build:
     needs: check-and-trigger
@@ -107,7 +112,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 显式指定 Ubuntu 22.04
     permissions:
       contents: write
 
