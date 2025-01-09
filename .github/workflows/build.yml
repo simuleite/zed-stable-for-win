@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-22.04  # 显式指定 Ubuntu 22.04
     outputs:
       trigger_build: ${{ steps.compare_tags.outputs.trigger_build }}
+      latest_tag: ${{ steps.compare_tags.outputs.latest_tag }}  # 输出 LATEST_TAG
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -20,17 +21,18 @@ jobs:
         id: get_latest_tag
         run: |
           latest_tag=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r '.tag_name')
+          if [ -z "$latest_tag" ]; then
+            echo "Failed to get latest tag"
+            exit 1
+          fi
           echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
           echo "Latest stable tag: $latest_tag"
 
-      - name: Restore last known tag
-        id: restore_cache
-        uses: actions/cache@v3
+      - name: Download last known tag
+        uses: actions/download-artifact@v4
         with:
-          path: last_known_tag.txt
-          key: last-known-tag
-          restore-keys: |
-            last-known-tag-
+          name: last_known_tag.txt
+          path: .
 
       - name: Compare with last known tag
         id: compare_tags
@@ -44,7 +46,8 @@ jobs:
           echo "Latest tag: ${{ env.LATEST_TAG }}"
 
           if [ "$last_known_tag" != "${{ env.LATEST_TAG }}" ]; then
-            echo "trigger_build=true" >> $GITHUB_OUTPUT  # 使用环境文件设置输出
+            echo "trigger_build=true" >> $GITHUB_OUTPUT
+            echo "latest_tag=${{ env.LATEST_TAG }}" >> $GITHUB_OUTPUT  # 输出 LATEST_TAG
           else
             echo "trigger_build=false" >> $GITHUB_OUTPUT
           fi
@@ -53,13 +56,11 @@ jobs:
         run: |
           echo "${{ env.LATEST_TAG }}" > last_known_tag.txt
 
-      - name: Cache last known tag
-        uses: actions/cache@v3
+      - name: Upload last known tag
+        uses: actions/upload-artifact@v4
         with:
+          name: last_known_tag.txt
           path: last_known_tag.txt
-          key: last-known-tag-${{ github.run_id }}
-          restore-keys: |
-            last-known-tag-
 
   build:
     needs: check-and-trigger
@@ -91,7 +92,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: zed-industries/zed
-          ref: ${{ env.LATEST_TAG }}  # 使用最新的稳定版标签
+          ref: ${{ needs.check-and-trigger.outputs.latest_tag }}  # 使用最新的稳定版标签
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -131,7 +132,7 @@ jobs:
 
       - name: Get the current tag name
         id: tag
-        run: echo "TAG_NAME=${{ env.LATEST_TAG }}" >> $GITHUB_ENV
+        run: echo "TAG_NAME=${{ needs.check-and-trigger.outputs.latest_tag }}" >> $GITHUB_ENV
 
       - name: Create release directories and zip
         run: |
